@@ -68,7 +68,7 @@ function parseDateFromSheetName(sheetName) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-async function loadScheduleData(referenceDate = new Date()) {
+async function loadScheduleWorkbook() {
   const schedulePath = resolveSchedulePath();
   if (!fs.existsSync(schedulePath)) {
     throw new Error(`Planilha de escala não encontrada em ${schedulePath}. Configure RPA_SCHEDULE_FILE corretamente.`);
@@ -76,22 +76,54 @@ async function loadScheduleData(referenceDate = new Date()) {
 
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(schedulePath);
+  return { workbook, schedulePath };
+}
 
-  const preferredSheetName = SCHEDULE_SHEET || '';
-  let worksheet = workbook.getWorksheet(preferredSheetName);
-  if (!worksheet) {
-    const matchingSheet = workbook.worksheets.find(ws => parseDateFromSheetName(ws.name));
-    if (matchingSheet) {
-      worksheet = matchingSheet;
-    } else {
-      worksheet = workbook.worksheets[0];
+function determineStartSheetIndex(workbook) {
+  if (SCHEDULE_SHEET) {
+    const preferred = workbook.getWorksheet(SCHEDULE_SHEET);
+    if (preferred) {
+      return workbook.worksheets.indexOf(preferred);
     }
-    console.warn(`Aba ${preferredSheetName || 'data'} não encontrada. Utilizando aba ${worksheet?.name ?? 'desconhecida'}.`);
+    console.warn(`Aba configurada em RPA_SCHEDULE_SHEET ("${SCHEDULE_SHEET}") não encontrada. Iniciando da primeira aba disponível.`);
   }
-  if (!worksheet) {
-    throw new Error('Planilha de escala não contém abas válidas.');
+  const firstDateSheet = workbook.worksheets.find(ws => parseDateFromSheetName(ws.name));
+  if (firstDateSheet) {
+    return workbook.worksheets.indexOf(firstDateSheet);
+  }
+  return 0;
+}
+
+function buildWorksheetQueue(workbook, startIndex, referenceDate) {
+  if (!workbook.worksheets.length) {
+    return [];
   }
 
+  const normalizedIndex = Math.max(0, Math.min(startIndex, workbook.worksheets.length - 1));
+  const queue = [];
+  const firstWorksheet = workbook.worksheets[normalizedIndex];
+  queue.push({
+    worksheet: firstWorksheet,
+    worksheetName: firstWorksheet.name,
+    scheduleDate: parseDateFromSheetName(firstWorksheet.name) || referenceDate
+  });
+
+  for (let i = normalizedIndex + 1; i < workbook.worksheets.length; i++) {
+    const worksheet = workbook.worksheets[i];
+    const parsedDate = parseDateFromSheetName(worksheet.name);
+    if (parsedDate) {
+      queue.push({
+        worksheet,
+        worksheetName: worksheet.name,
+        scheduleDate: parsedDate
+      });
+    }
+  }
+
+  return queue;
+}
+
+function extractRecordsFromWorksheet(worksheet) {
   const headerRow = worksheet.getRow(1);
   const headerMap = {};
   headerRow.eachCell((cell, colNumber) => {
@@ -127,7 +159,7 @@ async function loadScheduleData(referenceDate = new Date()) {
     throw new Error(`Nenhum registro encontrado na aba ${worksheet.name}.`);
   }
 
-  return { records, worksheetName: worksheet.name, schedulePath };
+  return records;
 }
 
 async function selectOptionFromCombo(page, frame, fieldName, value) {
@@ -275,20 +307,62 @@ async function acknowledgeDialogs(page) {
   }
 }
 
+async function clickNovoRegistro(frame) {
+  const selectors = [
+    'button.btn-novo-registro',
+    'button:has-text("Novo registro")',
+    'button:has-text("Novo")',
+    'span:has-text("Novo registro")',
+    'text=/Novo registro/i',
+    'button[title*="Novo"]',
+    'sk-button[title*="Novo"] button',
+    'sk-button[aria-label*="Novo"] button'
+  ];
+  for (const selector of selectors) {
+    const locator = frame.locator(selector).first();
+    try {
+      await locator.waitFor({ state: 'visible', timeout: 2000 });
+      await locator.click();
+      return true;
+    } catch {
+      // tenta próximo seletor
+    }
+  }
+  return false;
+}
+
+async function startNewRegister(frame) {
+  const clicked = await clickNovoRegistro(frame);
+  if (clicked) return;
+  try {
+    await clickGlyphButton(frame, '');
+  } catch (error) {
+    throw new Error('Botão inicial "Novo registro" não encontrado.');
+  }
+}
+
+async function prepareScheduleForDate(frame, page, scheduleDate) {
+  await startNewRegister(frame);
+  await setEntryDate(frame, scheduleDate);
+  await clickGlyphButton(frame, '');
+  await confirmEntry(frame);
+  await saveEntry(frame);
+  await acknowledgeDialogs(page);
+}
+
 async function run() {
   ensureCredentials();
 
   const referenceDate = new Date();
-  const { records, worksheetName, schedulePath } = await loadScheduleData(referenceDate);
-  const scheduleDate =
-    parseDateFromSheetName(worksheetName) ||
-    parseDateFromSheetName(SCHEDULE_SHEET) ||
-    referenceDate;
-  const primaryRecord = records[0];
+  const { workbook, schedulePath } = await loadScheduleWorkbook();
+  const startIndex = determineStartSheetIndex(workbook);
+  const sheetQueue = buildWorksheetQueue(workbook, startIndex, referenceDate);
+  if (!sheetQueue.length) {
+    throw new Error('Não foi possível identificar abas para processamento na planilha.');
+  }
+
   console.log(`Planilha carregada: ${schedulePath}`);
-  console.log(`Aba utilizada: ${worksheetName}`);
-  console.log(`Data da escala: ${formatDateToBR(scheduleDate)}`);
-  console.log(`Primeiro registro:`, primaryRecord);
+  console.log(`Abas a processar: ${sheetQueue.map(sheet => sheet.worksheetName).join(', ')}`);
 
   const browser = await chromium.launch({
     headless: false,
@@ -325,67 +399,31 @@ async function run() {
     throw new Error('Frame "Escala Motoristas" não carregado.');
   }
 
-  async function clickNovoRegistro() {
-    const selectors = [
-      'button.btn-novo-registro',
-      'button:has-text("Novo registro")',
-      'button:has-text("Novo")',
-      'span:has-text("Novo registro")',
-      'text=/Novo registro/i',
-      'button[title*="Novo"]',
-      'sk-button[title*="Novo"] button',
-      'sk-button[aria-label*="Novo"] button'
-    ];
-    for (const selector of selectors) {
-      const locator = escalaFrame.locator(selector).first();
-      try {
-        await locator.waitFor({ state: 'visible', timeout: 2000 });
-        await locator.click();
-        return true;
-      } catch (error) {
-        // tenta próximo seletor
-      }
+  for (const sheetInfo of sheetQueue) {
+    const { worksheet, worksheetName, scheduleDate } = sheetInfo;
+    const records = extractRecordsFromWorksheet(worksheet);
+    console.log(`\n--- Processando aba ${worksheetName} ---`);
+    console.log(`Data da escala: ${formatDateToBR(scheduleDate)}`);
+    console.log(`Primeiro registro:`, records[0]);
+
+    await prepareScheduleForDate(escalaFrame, page, scheduleDate);
+
+    for (const record of records) {
+      console.log(`Processando motorista: ${record.motorista} | Veículo: ${record.placa}`);
+      const newDriverButton = escalaFrame
+        .locator('button.btn-novo-registro')
+        .filter({ hasText: /\bVeículos x Motoristas\b/i })
+        .first();
+      await newDriverButton.waitFor({ state: 'visible', timeout: 10000 });
+      await newDriverButton.click();
+
+      await setTurno(escalaFrame, record.turno);
+      await setMotorista(escalaFrame, record.motorista);
+      await setVeiculo(escalaFrame, record.placa);
+      await setTipo(escalaFrame, record.tipo);
+      await saveEntry(escalaFrame);
+      await acknowledgeDialogs(page);
     }
-    return false;
-  }
-
-  const novoClicado = await clickNovoRegistro();
-  if (!novoClicado) {
-    try {
-      await clickGlyphButton(escalaFrame, '');
-    } catch {
-      const availableButtons = await escalaFrame
-        .locator('button')
-        .evaluateAll(btns => btns.map(btn => ({
-          text: btn.innerText?.trim(),
-          title: btn.title,
-          classes: btn.className
-        })));
-      console.error('Botões encontrados:', availableButtons);
-      throw new Error('Botão inicial "Novo registro" não encontrado.');
-    }
-  }
-  await setEntryDate(escalaFrame, scheduleDate);
-  await clickGlyphButton(escalaFrame, '');
-  await confirmEntry(escalaFrame);
-  await saveEntry(escalaFrame);
-  await acknowledgeDialogs(page);
-
-  for (const record of records) {
-    console.log(`Processando motorista: ${record.motorista} | Veículo: ${record.placa}`);
-    const newDriverButton = escalaFrame
-      .locator('button.btn-novo-registro')
-      .filter({ hasText: /\bVeículos x Motoristas\b/i })
-      .first();
-    await newDriverButton.waitFor({ state: 'visible', timeout: 10000 });
-    await newDriverButton.click();
-
-    await setTurno(escalaFrame, record.turno);
-    await setMotorista(escalaFrame, record.motorista);
-    await setVeiculo(escalaFrame, record.placa);
-    await setTipo(escalaFrame, record.tipo);
-    await saveEntry(escalaFrame);
-    await acknowledgeDialogs(page);
   }
 
   if (KEEP_BROWSER_OPEN) {
