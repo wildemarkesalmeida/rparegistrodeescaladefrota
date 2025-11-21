@@ -212,15 +212,47 @@ async function setTurno(frame, turno) {
   await option.click();
 }
 
+async function waitForTypeaheadReady(input, frame) {
+  await input.waitFor({ state: 'visible', timeout: 10000 });
+  await input.click({ force: true });
+  const start = Date.now();
+  while (Date.now() - start < 15000) {
+    try {
+      if (await input.isEnabled()) {
+        return;
+      }
+    } catch {
+      // ignora erros transitórios
+    }
+    await frame.waitForTimeout(150);
+  }
+  throw new Error('Campo de motorista não ficou pronto para digitar.');
+}
+
+async function typeWithRetries(input, text, attempts = 3) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      await input.type(text, { delay: 50 });
+      return;
+    } catch (error) {
+      if (attempt === attempts - 1) throw error;
+      await input.fill('');
+      await input.press('Backspace');
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+  }
+}
+
 async function setMotorista(frame, motorista) {
   const motoristaInput = frame.locator('sk-pesquisa-input[sk-field-name="CODMOT"]').locator('sk-typeahead-input input');
+  await waitForTypeaheadReady(motoristaInput, frame);
   await motoristaInput.fill('');
-  await motoristaInput.type(motorista, { delay: 50 });
+  await typeWithRetries(motoristaInput, motorista);
   const suggestion = frame.locator('.ui-select-choices-row')
     .filter({ hasText: new RegExp(escapeForRegex(motorista), 'i') })
     .first();
   try {
-    await suggestion.waitFor({ state: 'visible', timeout: 5000 });
+    await suggestion.waitFor({ state: 'visible', timeout: 7000 });
     await suggestion.click();
   } catch {
     await motoristaInput.press('Tab');
