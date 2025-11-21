@@ -1,0 +1,22 @@
+{
+  "name": "rparegistrodeescaladefrota",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "rpa": "node src/rpa.js",
+    "test": "node src/rpa.js",
+    "build:exe": "pkg src/rpa.js --target node18-win-x64 --output dist/rpa-escala.exe"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "pkg": "^5.8.1",
+    "playwright": "^1.56.1"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0"
+  }
+}
