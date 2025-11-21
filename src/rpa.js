@@ -307,9 +307,19 @@ async function acknowledgeDialogs(page) {
   }
 }
 
+async function waitForOverlayToHide(frame) {
+  await frame.waitForTimeout(500);
+  try {
+    await frame.waitForSelector('.SimplePopupGlass', { state: 'hidden', timeout: 5000 });
+  } catch {
+    await frame.waitForTimeout(300);
+  }
+}
+
 async function clickNovoRegistro(frame) {
   const selectors = [
     'button.btn-novo-registro',
+    'sk-button:has-text("Novo registro")',
     'button:has-text("Novo registro")',
     'button:has-text("Novo")',
     'span:has-text("Novo registro")',
@@ -332,11 +342,22 @@ async function clickNovoRegistro(frame) {
 }
 
 async function startNewRegister(frame) {
+  await waitForOverlayToHide(frame);
   const clicked = await clickNovoRegistro(frame);
   if (clicked) return;
   try {
     await clickGlyphButton(frame, '');
   } catch (error) {
+    const visibleButtons = await frame
+      .locator('button, sk-button')
+      .first()
+      .evaluate(el => ({
+        text: el.innerText?.trim(),
+        title: el.title,
+        classes: el.className
+      }))
+      .catch(() => null);
+    console.error('Botões visíveis antes do erro:', visibleButtons);
     throw new Error('Botão inicial "Novo registro" não encontrado.');
   }
 }
