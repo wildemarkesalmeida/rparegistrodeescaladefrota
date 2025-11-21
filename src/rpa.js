@@ -319,12 +319,21 @@ async function waitForOverlayToHide(frame) {
 async function clickNovoRegistro(frame) {
   const selectors = [
     'button.btn-novo-registro',
+    'sk-button.btn-novo-registro',
     'sk-button:has-text("Novo registro")',
     'button:has-text("Novo registro")',
     'button:has-text("Novo")',
+    'button:has-text("Cadastrar")',
+    'button:has-text("Incluir")',
+    'button:has-text("Adicionar")',
+    'button:has-text("Abrir cadastro")',
     'span:has-text("Novo registro")',
     'text=/Novo registro/i',
     'button[title*="Novo"]',
+    'button[title*="Cadastrar"]',
+    'button[ng-click*="novo"]',
+    'button[ng-click*="Novo"]',
+    'button[ng-click*="add"]',
     'sk-button[title*="Novo"] button',
     'sk-button[aria-label*="Novo"] button'
   ];
@@ -348,16 +357,8 @@ async function startNewRegister(frame) {
   try {
     await clickGlyphButton(frame, '');
   } catch (error) {
-    const visibleButtons = await frame
-      .locator('button, sk-button')
-      .first()
-      .evaluate(el => ({
-        text: el.innerText?.trim(),
-        title: el.title,
-        classes: el.className
-      }))
-      .catch(() => null);
-    console.error('Botões visíveis antes do erro:', visibleButtons);
+    const buttonTexts = await frame.locator('button').allTextContents().catch(() => []);
+    console.error('Botões visíveis antes do erro:', buttonTexts);
     throw new Error('Botão inicial "Novo registro" não encontrado.');
   }
 }
